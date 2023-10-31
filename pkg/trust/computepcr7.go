@@ -17,7 +17,6 @@ import (
 )
 
 const ShimLockGUID = "605dab50-e046-4300-abb6-3dd810dd8b23"
-const ShimVendordbGUID = "00000000-0000-0000-0000-000000000000"
 const SBAT = "sbat,1,2021030218\012"
 
 // Using DBX data from current ovmf_vars.fd in bootkit.
@@ -28,6 +27,13 @@ const DBXGuid = "a3a8baa01d04a848bc87c36d121b5e3d"
 type efiVarInfo struct {
 	varguid efi.GUID
 	hashed  []byte
+}
+
+type Pcr7Data struct {
+	Pcr7Tpm        []byte
+	Pcr7Production []byte
+	Pcr7Limited    []byte
+	Pcr7Events     []byte
 }
 
 func getCert(certfile string) ([]byte, error) {
@@ -167,7 +173,8 @@ func getHash(unicodeName string, varGuid efi.GUID, keysetPath string) ([]byte, e
 			return nil, err
 		}
 
-		certGuid, err := efi.DecodeGUIDString(ShimVendordbGUID)
+		guidfile := filepath.Join(keysetPath, "uki-"+unicodeName, "guid")
+		certGuid, err := getCertGUID(guidfile)
 		if err != nil {
 			return nil, err
 		}
@@ -183,7 +190,8 @@ func getHash(unicodeName string, varGuid efi.GUID, keysetPath string) ([]byte, e
 	}
 }
 
-func ComputePCR7(keysetName string) ([]byte, []byte, []byte, error) {
+func ComputePCR7(keysetName string) (*Pcr7Data, error) {
+	var outBuf bytes.Buffer
 	var pcr7Val = []byte{00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00,
 		00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00,
 		00, 00, 00, 00, 00, 00, 00, 00, 00, 00}
@@ -196,7 +204,7 @@ func ComputePCR7(keysetName string) ([]byte, []byte, []byte, error) {
 
 	shimLockGuid, err := efi.DecodeGUIDString(ShimLockGUID)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 	var efiSBInfo = map[string]*efiVarInfo{
 		"SecureBoot":     {efi.GlobalVariable, nil},
@@ -216,24 +224,25 @@ func ComputePCR7(keysetName string) ([]byte, []byte, []byte, error) {
 
 	moskeysetPath, err := utils.GetMosKeyPath()
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
 	keysetPath := filepath.Join(moskeysetPath, keysetName)
 	if !utils.PathExists(keysetPath) {
-		return nil, nil, nil, fmt.Errorf("Unknown keyset '%s', cannot find keyset at path: %q", keysetName, keysetPath)
+		return nil, fmt.Errorf("Unknown keyset '%s', cannot find keyset at path: %q", keysetName, keysetPath)
 	}
 
 	// First calculate the uefi vars and certs in order they are extended into pcr7.
 	for _, k := range uefiMeasured {
 		efiSBInfo[k].hashed, err = getHash(k, efiSBInfo[k].varguid, keysetPath)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, err
 		}
 		h := crypto.SHA256.New()
 		h.Write(pcr7Val)
 		h.Write(efiSBInfo[k].hashed)
 		pcr7Val = h.Sum(nil)
+		fmt.Fprintf(&outBuf, "%s: %x\n", k, efiSBInfo[k].hashed)
 	}
 
 	// Now extend in the 3 different possible uki signing keys.
@@ -241,12 +250,17 @@ func ComputePCR7(keysetName string) ([]byte, []byte, []byte, error) {
 	for uki, _ := range ukiKeys {
 		ukiHash, err := getHash(uki, efi.ImageSecurityDatabaseGuid, keysetPath)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, err
 		}
 		h := crypto.SHA256.New()
 		h.Write(pcr7Val)
 		h.Write(ukiHash)
 		ukiKeys[uki] = h.Sum(nil)
+		fmt.Fprintf(&outBuf, "%s-cert: %x\n", uki, ukiHash)
 	}
-	return ukiKeys["production"], ukiKeys["limited"], ukiKeys["tpm"], nil
+	p := Pcr7Data{Pcr7Tpm: ukiKeys["tpm"],
+		Pcr7Production: ukiKeys["production"],
+		Pcr7Limited:    ukiKeys["limited"],
+		Pcr7Events:     outBuf.Bytes()}
+	return &p, nil
 }

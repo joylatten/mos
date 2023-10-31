@@ -205,28 +205,28 @@ func initkeyset(keysetName string, Org []string) error {
 	}
 
 	// Generate the 3 uki-* pcr7 values for this keyset
-	prodPcr, limitedPcr, tpmPcr, err := trust.ComputePCR7(keysetName)
+	pcr7, err := trust.ComputePCR7(keysetName)
 	if err != nil {
 		return err
 	}
 
 	// Generate the luks EA Policies for this keyset
-	luksPolicyDigest, err := trust.GenLuksPolicy(prodPcr, trust.PolicyVersion.String())
+	luksPolicyDigest, err := trust.GenLuksPolicy(pcr7.Pcr7Production, trust.PolicyVersion.String())
 	if err != nil {
 		return err
 	}
 
 	// Generate the tpm passwod EA Policy Digest for this keyset
-	tpmpasswdPolicyDigest, err := trust.GenPasswdPolicy(tpmPcr)
+	tpmpasswdPolicyDigest, err := trust.GenPasswdPolicy(pcr7.Pcr7Limited)
 	if err != nil {
 		return err
 	}
 
 	// Add the signdata to the keyset
 	p := pcr7Data{
-		limited:            limitedPcr,
-		tpm:                tpmPcr,
-		production:         prodPcr,
+		limited:            pcr7.Pcr7Limited,
+		tpm:                pcr7.Pcr7Tpm,
+		production:         pcr7.Pcr7Production,
 		passwdPolicyDigest: tpmpasswdPolicyDigest,
 		luksPolicyDigest:   luksPolicyDigest}
 
